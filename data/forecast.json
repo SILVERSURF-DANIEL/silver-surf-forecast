@@ -4,5 +4,8 @@
   "wave_period": 4.6,
   "wave_direction": 341.09,
   "water_temperature": 26.52,
-  "updated_at": "2026-10-24T18:45:48.478950+00:00"
+  "wind_speed": 6.6,
+  "wind_direction": 9,
+  "updated_at": "2026-10-24T18:50:17.185856+00:00",
+  "wind_source": "MET Norway"
 }
