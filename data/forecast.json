@@ -7,7 +7,9 @@
   "wind_speed": 6.6,
   "wind_direction": 9,
   "sea_level": 0.01,
-  "updated_at": "2026-10-24T18:54:28.184219+00:00",
+  "wave_energy": 2.13,
+  "updated_at": "2026-10-24T18:58:55.399005+00:00",
   "wind_source": "MET Norway",
-  "sea_level_source": "Copernicus Marine"
+  "sea_level_source": "Copernicus Marine",
+  "wave_energy_unit": "kW/m"
 }
