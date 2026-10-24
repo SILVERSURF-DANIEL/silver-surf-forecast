@@ -83,7 +83,6 @@ def add_wind(result, now):
         )
 
         details = nearest["data"]["instant"]["details"]
-
         speed = float(details["wind_speed"])
         direction = float(details["wind_from_direction"])
 
@@ -93,25 +92,20 @@ def add_wind(result, now):
             result["wind_source"] = "MET Norway"
 
     except Exception as error:
-        print("Wind forecast unavailable:", error)
+        print("Wind unavailable:", error)
 
 
 def add_water_temperature(result, hour):
     try:
-        temperature = get_marine_dataset(
-            TEMP_DATASET,
-            ["thetao"],
-            hour,
-            hour,
+        dataset = get_marine_dataset(
+            TEMP_DATASET, ["thetao"], hour, hour
         )
 
-        if temperature is None:
+        if dataset is None:
             raise ValueError("Temperature dataset unavailable")
 
-        point = get_point(temperature)
-
         result["water_temperature"] = get_value(
-            point, "thetao"
+            get_point(dataset), "thetao"
         )
 
     except Exception as error:
@@ -123,27 +117,23 @@ def add_sea_level(result, now):
         start = now - timedelta(hours=1)
         end = now + timedelta(hours=1)
 
-        sea_level = get_marine_dataset(
+        dataset = get_marine_dataset(
             SEA_LEVEL_DATASET,
             ["zos"],
             start.strftime("%Y-%m-%dT%H:%M:%S"),
             end.strftime("%Y-%m-%dT%H:%M:%S"),
         )
 
-        if sea_level is None:
+        if dataset is None:
             raise ValueError("Sea level dataset unavailable")
 
-        point = get_point(sea_level)
-
-        nearest_time = point.sel(
+        point = get_point(dataset)
+        nearest = point.sel(
             time=now.replace(tzinfo=None),
             method="nearest",
         )
 
-        result["sea_level"] = get_value(
-            nearest_time, "zos"
-        )
-
+        result["sea_level"] = get_value(nearest, "zos")
         result["sea_level_source"] = "Copernicus Marine"
 
     except Exception as error:
@@ -151,36 +141,79 @@ def add_sea_level(result, now):
 
 
 def add_wave_energy(result, hour):
-    # Separate request so existing wave data is protected.
     try:
-        energy_data = get_marine_dataset(
-            WAVE_DATASET,
-            ["VTM10"],
-            hour,
-            hour,
+        dataset = get_marine_dataset(
+            WAVE_DATASET, ["VTM10"], hour, hour
         )
 
-        if energy_data is None:
-            raise ValueError("Wave energy dataset unavailable")
+        if dataset is None:
+            raise ValueError("Energy period unavailable")
 
-        point = get_point(energy_data)
-        energy_period = get_value(point, "VTM10")
+        period = get_value(get_point(dataset), "VTM10")
         height = result["wave_height"]
 
         if (
             height is not None
-            and energy_period is not None
+            and period is not None
             and height >= 0
-            and energy_period > 0
+            and period > 0
         ):
             result["wave_energy"] = round(
-                0.49 * height ** 2 * energy_period,
-                2,
+                0.49 * height ** 2 * period, 2
             )
             result["wave_energy_unit"] = "kW/m"
 
     except Exception as error:
         print("Wave energy unavailable:", error)
+
+
+def add_surf_components(result, hour):
+    # New: separate swell and wind-wave components.
+    # These are offshore model values, NOT breaking surf height.
+    variables = [
+        "VHM0_SW1",
+        "VMDR_SW1",
+        "VTM01_SW1",
+        "VHM0_SW2",
+        "VMDR_SW2",
+        "VTM01_SW2",
+        "VHM0_WW",
+        "VMDR_WW",
+        "VTM01_WW",
+    ]
+
+    try:
+        dataset = get_marine_dataset(
+            WAVE_DATASET,
+            variables,
+            hour,
+            hour,
+        )
+
+        if dataset is None:
+            raise ValueError("Swell data unavailable")
+
+        point = get_point(dataset)
+
+        mappings = {
+            "primary_swell_height": "VHM0_SW1",
+            "primary_swell_direction": "VMDR_SW1",
+            "primary_swell_period": "VTM01_SW1",
+            "secondary_swell_height": "VHM0_SW2",
+            "secondary_swell_direction": "VMDR_SW2",
+            "secondary_swell_period": "VTM01_SW2",
+            "wind_wave_height": "VHM0_WW",
+            "wind_wave_direction": "VMDR_WW",
+            "wind_wave_period": "VTM01_WW",
+        }
+
+        for output_name, variable in mappings.items():
+            result[output_name] = get_value(point, variable)
+
+        print("Swell components loaded successfully")
+
+    except Exception as error:
+        print("Swell components unavailable:", error)
 
 
 def main():
@@ -210,16 +243,26 @@ def main():
         "wind_direction": None,
         "sea_level": None,
         "wave_energy": None,
+        "primary_swell_height": None,
+        "primary_swell_direction": None,
+        "primary_swell_period": None,
+        "secondary_swell_height": None,
+        "secondary_swell_direction": None,
+        "secondary_swell_period": None,
+        "wind_wave_height": None,
+        "wind_wave_direction": None,
+        "wind_wave_period": None,
         "updated_at": now.isoformat(),
     }
 
-    # Preserve all existing forecast data
+    # Keep all existing working measurements
     add_water_temperature(result, hour)
     add_wind(result, now)
     add_sea_level(result, now)
-
-    # New calculated wave power
     add_wave_energy(result, hour)
+
+    # New data for developing a Bat Yam surf-height model
+    add_surf_components(result, hour)
 
     os.makedirs("data", exist_ok=True)
 
