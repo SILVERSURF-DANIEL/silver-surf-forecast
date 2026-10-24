@@ -6,6 +6,8 @@
   "water_temperature": 26.52,
   "wind_speed": 6.6,
   "wind_direction": 9,
-  "updated_at": "2026-10-24T18:50:17.185856+00:00",
-  "wind_source": "MET Norway"
+  "sea_level": 0.01,
+  "updated_at": "2026-10-24T18:54:28.184219+00:00",
+  "wind_source": "MET Norway",
+  "sea_level_source": "Copernicus Marine"
 }
