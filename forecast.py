@@ -1,13 +1,14 @@
 import json
 import math
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from urllib.request import Request, urlopen
 
 import copernicusmarine
 
 WAVE_DATASET = "cmems_mod_med_wav_anfc_4.2km_PT1H-i"
 TEMP_DATASET = "cmems_mod_med_phy-tem_anfc_4.2km-2D_PT1H-m"
+SEA_LEVEL_DATASET = "cmems_mod_med_phy-ssh_anfc_4.2km_PT15M-i"
 
 USERNAME = os.environ["COPERNICUSMARINE_SERVICE_USERNAME"]
 PASSWORD = os.environ["COPERNICUSMARINE_SERVICE_PASSWORD"]
@@ -44,7 +45,6 @@ def add_wind(result, now):
 
         timeseries = weather["properties"]["timeseries"]
 
-        # Find the forecast hour closest to the current time.
         nearest = min(
             timeseries,
             key=lambda item: abs(
@@ -70,11 +70,53 @@ def add_wind(result, now):
         print("Wind forecast unavailable:", error)
 
 
+def add_sea_level(result, now):
+    try:
+        start = now - timedelta(hours=1)
+        end = now + timedelta(hours=1)
+
+        sea_level = copernicusmarine.open_dataset(
+            username=USERNAME,
+            password=PASSWORD,
+            dataset_id=SEA_LEVEL_DATASET,
+            variables=["zos"],
+            minimum_longitude=34.68,
+            maximum_longitude=34.75,
+            minimum_latitude=31.98,
+            maximum_latitude=32.04,
+            start_datetime=start.strftime("%Y-%m-%dT%H:%M:%S"),
+            end_datetime=end.strftime("%Y-%m-%dT%H:%M:%S"),
+        )
+
+        if sea_level is None:
+            raise ValueError("Sea level dataset unavailable")
+
+        point = sea_level.sel(
+            latitude=32.02,
+            longitude=34.70,
+            method="nearest",
+        )
+
+        nearest_time = point.sel(
+            time=now.replace(tzinfo=None),
+            method="nearest",
+        )
+
+        result["sea_level"] = get_value(
+            nearest_time, "zos"
+        )
+
+        result["sea_level_source"] = "Copernicus Marine"
+
+    except Exception as error:
+        print("Sea level unavailable:", error)
+
+
 def main():
     now = datetime.now(timezone.utc)
     hour = now.strftime("%Y-%m-%dT%H:00:00")
 
-    # Existing wave forecast
+    # Existing working wave forecast
     waves = copernicusmarine.open_dataset(
         username=USERNAME,
         password=PASSWORD,
@@ -102,6 +144,7 @@ def main():
         "water_temperature": None,
         "wind_speed": None,
         "wind_direction": None,
+        "sea_level": None,
         "updated_at": now.isoformat(),
     }
 
@@ -133,8 +176,11 @@ def main():
     except Exception as error:
         print("Water temperature unavailable:", error)
 
-    # New wind forecast
+    # Existing wind forecast
     add_wind(result, now)
+
+    # New sea level forecast
+    add_sea_level(result, now)
 
     os.makedirs("data", exist_ok=True)
 
