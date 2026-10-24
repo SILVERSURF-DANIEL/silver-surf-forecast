@@ -13,6 +13,9 @@ SEA_LEVEL_DATASET = "cmems_mod_med_phy-ssh_anfc_4.2km_PT15M-i"
 USERNAME = os.environ["COPERNICUSMARINE_SERVICE_USERNAME"]
 PASSWORD = os.environ["COPERNICUSMARINE_SERVICE_PASSWORD"]
 
+LATITUDE = 32.02
+LONGITUDE = 34.70
+
 
 def get_value(point, variable):
     try:
@@ -20,6 +23,29 @@ def get_value(point, variable):
         return round(number, 2) if math.isfinite(number) else None
     except (ValueError, TypeError, KeyError, AttributeError):
         return None
+
+
+def get_marine_dataset(dataset_id, variables, start, end):
+    return copernicusmarine.open_dataset(
+        username=USERNAME,
+        password=PASSWORD,
+        dataset_id=dataset_id,
+        variables=variables,
+        minimum_longitude=34.68,
+        maximum_longitude=34.75,
+        minimum_latitude=31.98,
+        maximum_latitude=32.04,
+        start_datetime=start,
+        end_datetime=end,
+    )
+
+
+def get_point(dataset):
+    return dataset.sel(
+        latitude=LATITUDE,
+        longitude=LONGITUDE,
+        method="nearest",
+    )
 
 
 def add_wind(result, now):
@@ -70,32 +96,44 @@ def add_wind(result, now):
         print("Wind forecast unavailable:", error)
 
 
+def add_water_temperature(result, hour):
+    try:
+        temperature = get_marine_dataset(
+            TEMP_DATASET,
+            ["thetao"],
+            hour,
+            hour,
+        )
+
+        if temperature is None:
+            raise ValueError("Temperature dataset unavailable")
+
+        point = get_point(temperature)
+
+        result["water_temperature"] = get_value(
+            point, "thetao"
+        )
+
+    except Exception as error:
+        print("Water temperature unavailable:", error)
+
+
 def add_sea_level(result, now):
     try:
         start = now - timedelta(hours=1)
         end = now + timedelta(hours=1)
 
-        sea_level = copernicusmarine.open_dataset(
-            username=USERNAME,
-            password=PASSWORD,
-            dataset_id=SEA_LEVEL_DATASET,
-            variables=["zos"],
-            minimum_longitude=34.68,
-            maximum_longitude=34.75,
-            minimum_latitude=31.98,
-            maximum_latitude=32.04,
-            start_datetime=start.strftime("%Y-%m-%dT%H:%M:%S"),
-            end_datetime=end.strftime("%Y-%m-%dT%H:%M:%S"),
+        sea_level = get_marine_dataset(
+            SEA_LEVEL_DATASET,
+            ["zos"],
+            start.strftime("%Y-%m-%dT%H:%M:%S"),
+            end.strftime("%Y-%m-%dT%H:%M:%S"),
         )
 
         if sea_level is None:
             raise ValueError("Sea level dataset unavailable")
 
-        point = sea_level.sel(
-            latitude=32.02,
-            longitude=34.70,
-            method="nearest",
-        )
+        point = get_point(sea_level)
 
         nearest_time = point.sel(
             time=now.replace(tzinfo=None),
@@ -112,29 +150,55 @@ def add_sea_level(result, now):
         print("Sea level unavailable:", error)
 
 
+def add_wave_energy(result, hour):
+    # Separate request so existing wave data is protected.
+    try:
+        energy_data = get_marine_dataset(
+            WAVE_DATASET,
+            ["VTM10"],
+            hour,
+            hour,
+        )
+
+        if energy_data is None:
+            raise ValueError("Wave energy dataset unavailable")
+
+        point = get_point(energy_data)
+        energy_period = get_value(point, "VTM10")
+        height = result["wave_height"]
+
+        if (
+            height is not None
+            and energy_period is not None
+            and height >= 0
+            and energy_period > 0
+        ):
+            result["wave_energy"] = round(
+                0.49 * height ** 2 * energy_period,
+                2,
+            )
+            result["wave_energy_unit"] = "kW/m"
+
+    except Exception as error:
+        print("Wave energy unavailable:", error)
+
+
 def main():
     now = datetime.now(timezone.utc)
     hour = now.strftime("%Y-%m-%dT%H:00:00")
 
-    # Existing working wave forecast
-    waves = copernicusmarine.open_dataset(
-        username=USERNAME,
-        password=PASSWORD,
-        dataset_id=WAVE_DATASET,
-        variables=["VHM0", "VMDR", "VTM01_SW1"],
-        minimum_longitude=34.68,
-        maximum_longitude=34.75,
-        minimum_latitude=31.98,
-        maximum_latitude=32.04,
-        start_datetime=hour,
-        end_datetime=hour,
+    # Original working wave forecast
+    waves = get_marine_dataset(
+        WAVE_DATASET,
+        ["VHM0", "VMDR", "VTM01_SW1"],
+        hour,
+        hour,
     )
 
-    point = waves.sel(
-        latitude=32.02,
-        longitude=34.70,
-        method="nearest",
-    )
+    if waves is None:
+        raise ValueError("Wave forecast unavailable")
+
+    point = get_point(waves)
 
     result = {
         "location": "Bat Yam",
@@ -145,53 +209,30 @@ def main():
         "wind_speed": None,
         "wind_direction": None,
         "sea_level": None,
+        "wave_energy": None,
         "updated_at": now.isoformat(),
     }
 
-    # Existing water temperature
-    try:
-        temperature = copernicusmarine.open_dataset(
-            username=USERNAME,
-            password=PASSWORD,
-            dataset_id=TEMP_DATASET,
-            variables=["thetao"],
-            minimum_longitude=34.68,
-            maximum_longitude=34.75,
-            minimum_latitude=31.98,
-            maximum_latitude=32.04,
-            start_datetime=hour,
-            end_datetime=hour,
-        )
-
-        temp_point = temperature.sel(
-            latitude=32.02,
-            longitude=34.70,
-            method="nearest",
-        )
-
-        result["water_temperature"] = get_value(
-            temp_point, "thetao"
-        )
-
-    except Exception as error:
-        print("Water temperature unavailable:", error)
-
-    # Existing wind forecast
+    # Preserve all existing forecast data
+    add_water_temperature(result, hour)
     add_wind(result, now)
-
-    # New sea level forecast
     add_sea_level(result, now)
+
+    # New calculated wave power
+    add_wave_energy(result, hour)
 
     os.makedirs("data", exist_ok=True)
 
     with open(
-        "data/forecast.json", "w", encoding="utf-8"
+        "data/forecast.json",
+        "w",
+        encoding="utf-8",
     ) as file:
         json.dump(
             result,
             file,
             ensure_ascii=False,
-            indent=2
+            indent=2,
         )
 
     print(result)
