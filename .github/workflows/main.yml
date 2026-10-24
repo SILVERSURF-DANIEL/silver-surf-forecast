@@ -30,7 +30,10 @@ jobs:
         env:
           COPERNICUSMARINE_SERVICE_USERNAME: ${{ secrets.COPERNICUS_USERNAME }}
           COPERNICUSMARINE_SERVICE_PASSWORD: ${{ secrets.COPERNICUS_PASSWORD }}
-        run: python forecast.py
+        run: |
+          python -c "import os; assert os.getenv('COPERNICUSMARINE_SERVICE_USERNAME') and os.getenv('COPERNICUSMARINE_SERVICE_PASSWORD'), 'Missing GitHub secrets'"
+          copernicusmarine login --check-credentials-valid
+          python forecast.py
 
       - name: Save forecast data
         run: |
