@@ -2,6 +2,7 @@ import json
 import math
 import os
 from datetime import datetime, timezone
+from urllib.request import Request, urlopen
 
 import copernicusmarine
 
@@ -20,11 +21,60 @@ def get_value(point, variable):
         return None
 
 
+def add_wind(result, now):
+    url = (
+        "https://api.met.no/weatherapi/locationforecast/2.0/compact"
+        "?lat=32.02&lon=34.70"
+    )
+
+    request = Request(
+        url,
+        headers={
+            "User-Agent": (
+                "SilverSurfReport/1.0 "
+                "(https://silversurfboardsisrael.com)"
+            ),
+            "Accept": "application/json",
+        },
+    )
+
+    try:
+        with urlopen(request, timeout=20) as response:
+            weather = json.load(response)
+
+        timeseries = weather["properties"]["timeseries"]
+
+        # Find the forecast hour closest to the current time.
+        nearest = min(
+            timeseries,
+            key=lambda item: abs(
+                (
+                    datetime.fromisoformat(
+                        item["time"].replace("Z", "+00:00")
+                    ) - now
+                ).total_seconds()
+            ),
+        )
+
+        details = nearest["data"]["instant"]["details"]
+
+        speed = float(details["wind_speed"])
+        direction = float(details["wind_from_direction"])
+
+        if math.isfinite(speed) and math.isfinite(direction):
+            result["wind_speed"] = round(speed, 1)
+            result["wind_direction"] = round(direction) % 360
+            result["wind_source"] = "MET Norway"
+
+    except Exception as error:
+        print("Wind forecast unavailable:", error)
+
+
 def main():
     now = datetime.now(timezone.utc)
     hour = now.strftime("%Y-%m-%dT%H:00:00")
 
-    # Existing working wave forecast
+    # Existing wave forecast
     waves = copernicusmarine.open_dataset(
         username=USERNAME,
         password=PASSWORD,
@@ -41,7 +91,7 @@ def main():
     point = waves.sel(
         latitude=32.02,
         longitude=34.70,
-        method="nearest"
+        method="nearest",
     )
 
     result = {
@@ -50,11 +100,12 @@ def main():
         "wave_period": get_value(point, "VTM01_SW1"),
         "wave_direction": get_value(point, "VMDR"),
         "water_temperature": None,
-        "updated_at": now.isoformat()
+        "wind_speed": None,
+        "wind_direction": None,
+        "updated_at": now.isoformat(),
     }
 
-    # Additional sea surface temperature
-    # A failure here will not stop the wave forecast.
+    # Existing water temperature
     try:
         temperature = copernicusmarine.open_dataset(
             username=USERNAME,
@@ -72,7 +123,7 @@ def main():
         temp_point = temperature.sel(
             latitude=32.02,
             longitude=34.70,
-            method="nearest"
+            method="nearest",
         )
 
         result["water_temperature"] = get_value(
@@ -82,10 +133,20 @@ def main():
     except Exception as error:
         print("Water temperature unavailable:", error)
 
+    # New wind forecast
+    add_wind(result, now)
+
     os.makedirs("data", exist_ok=True)
 
-    with open("data/forecast.json", "w", encoding="utf-8") as file:
-        json.dump(result, file, ensure_ascii=False, indent=2)
+    with open(
+        "data/forecast.json", "w", encoding="utf-8"
+    ) as file:
+        json.dump(
+            result,
+            file,
+            ensure_ascii=False,
+            indent=2
+        )
 
     print(result)
 
