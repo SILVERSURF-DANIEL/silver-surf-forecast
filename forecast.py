@@ -12,6 +12,8 @@ def main():
     now = datetime.now(timezone.utc)
 
     dataset = copernicusmarine.open_dataset(
+        username=os.environ["COPERNICUS_USERNAME"],
+        password=os.environ["COPERNICUS_PASSWORD"],
         dataset_id=DATASET,
         variables=["VHM0", "VMDR", "VTM01_SW1"],
         minimum_longitude=34.68,
