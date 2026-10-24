@@ -16,6 +16,11 @@ PASSWORD = os.environ["COPERNICUSMARINE_SERVICE_PASSWORD"]
 LATITUDE = 32.02
 LONGITUDE = 34.70
 
+# Experimental Bat Yam surf-height calibration
+# Observed: ~0.30 m breaking surf
+# Primary offshore swell: 0.89 m
+SURF_CALIBRATION = 0.30 / 0.89
+
 
 def get_value(point, variable):
     try:
@@ -150,7 +155,9 @@ def add_wave_energy(result, hour):
             raise ValueError("Energy period unavailable")
 
         period = get_value(get_point(dataset), "VTM10")
-        height = result["wave_height"]
+
+        # Use offshore significant wave height, not surf estimate.
+        height = result["wave_height_offshore"]
 
         if (
             height is not None
@@ -168,8 +175,6 @@ def add_wave_energy(result, hour):
 
 
 def add_surf_components(result, hour):
-    # New: separate swell and wind-wave components.
-    # These are offshore model values, NOT breaking surf height.
     variables = [
         "VHM0_SW1",
         "VMDR_SW1",
@@ -184,10 +189,7 @@ def add_surf_components(result, hour):
 
     try:
         dataset = get_marine_dataset(
-            WAVE_DATASET,
-            variables,
-            hour,
-            hour,
+            WAVE_DATASET, variables, hour, hour
         )
 
         if dataset is None:
@@ -210,17 +212,31 @@ def add_surf_components(result, hour):
         for output_name, variable in mappings.items():
             result[output_name] = get_value(point, variable)
 
-        print("Swell components loaded successfully")
-
     except Exception as error:
         print("Swell components unavailable:", error)
+
+
+def add_surf_height_estimate(result):
+    swell = result["primary_swell_height"]
+
+    # Never substitute offshore height if swell is unavailable.
+    if swell is not None and swell >= 0:
+        estimated_height = swell * SURF_CALIBRATION
+
+        result["wave_height"] = round(estimated_height, 2)
+        result["surf_height_cm"] = round(estimated_height * 100)
+        result["surf_height_method"] = "experimental_bat_yam_v1"
+        result["surf_height_status"] = "unvalidated"
+
+    else:
+        result["wave_height"] = None
+        result["surf_height_cm"] = None
 
 
 def main():
     now = datetime.now(timezone.utc)
     hour = now.strftime("%Y-%m-%dT%H:00:00")
 
-    # Original working wave forecast
     waves = get_marine_dataset(
         WAVE_DATASET,
         ["VHM0", "VMDR", "VTM01_SW1"],
@@ -235,7 +251,9 @@ def main():
 
     result = {
         "location": "Bat Yam",
-        "wave_height": get_value(point, "VHM0"),
+        "wave_height": None,
+        "wave_height_offshore": get_value(point, "VHM0"),
+        "surf_height_cm": None,
         "wave_period": get_value(point, "VTM01_SW1"),
         "wave_direction": get_value(point, "VMDR"),
         "water_temperature": None,
@@ -255,14 +273,15 @@ def main():
         "updated_at": now.isoformat(),
     }
 
-    # Keep all existing working measurements
+    # All existing forecast sources
     add_water_temperature(result, hour)
     add_wind(result, now)
     add_sea_level(result, now)
     add_wave_energy(result, hour)
-
-    # New data for developing a Bat Yam surf-height model
     add_surf_components(result, hour)
+
+    # New experimental surf-height estimate
+    add_surf_height_estimate(result)
 
     os.makedirs("data", exist_ok=True)
 
