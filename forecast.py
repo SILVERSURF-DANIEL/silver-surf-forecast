@@ -6,6 +6,9 @@ from urllib.request import Request, urlopen
 
 import copernicusmarine
 
+# SILVER SURF REPORT — BAT YAM
+# Experimental breaking surf height model, version 2
+
 WAVE_DATASET = "cmems_mod_med_wav_anfc_4.2km_PT1H-i"
 TEMP_DATASET = "cmems_mod_med_phy-tem_anfc_4.2km-2D_PT1H-m"
 SEA_LEVEL_DATASET = "cmems_mod_med_phy-ssh_anfc_4.2km_PT15M-i"
@@ -16,18 +19,26 @@ PASSWORD = os.environ["COPERNICUSMARINE_SERVICE_PASSWORD"]
 LATITUDE = 32.02
 LONGITUDE = 34.70
 
-# Experimental Bat Yam surf-height calibration
-# Observed: ~0.30 m breaking surf
-# Primary offshore swell: 0.89 m
-SURF_CALIBRATION = 0.30 / 0.89
+# Preliminary orientation of the Bat Yam coastline.
+# 270 degrees means the beach faces west.
+BEACH_FACING = 270.0
+
+# First calibration: estimated 30 cm surf from the
+# 24 October 2026 observation. This is NOT validated.
+BASE_SURF_FACTOR = 1.0
+REFERENCE_PERIOD = 4.53
+PERIOD_EXPONENT = 0.5
+WIND_WAVE_FACTOR = 0.6
 
 
 def get_value(point, variable):
     try:
         number = float(point[variable].values.squeeze())
-        return round(number, 2) if math.isfinite(number) else None
+        if math.isfinite(number):
+            return round(number, 2)
     except (ValueError, TypeError, KeyError, AttributeError):
-        return None
+        pass
+    return None
 
 
 def get_marine_dataset(dataset_id, variables, start, end):
@@ -74,10 +85,8 @@ def add_wind(result, now):
         with urlopen(request, timeout=20) as response:
             weather = json.load(response)
 
-        timeseries = weather["properties"]["timeseries"]
-
         nearest = min(
-            timeseries,
+            weather["properties"]["timeseries"],
             key=lambda item: abs(
                 (
                     datetime.fromisoformat(
@@ -107,7 +116,7 @@ def add_water_temperature(result, hour):
         )
 
         if dataset is None:
-            raise ValueError("Temperature dataset unavailable")
+            raise ValueError("Temperature unavailable")
 
         result["water_temperature"] = get_value(
             get_point(dataset), "thetao"
@@ -130,9 +139,10 @@ def add_sea_level(result, now):
         )
 
         if dataset is None:
-            raise ValueError("Sea level dataset unavailable")
+            raise ValueError("Sea level unavailable")
 
         point = get_point(dataset)
+
         nearest = point.sel(
             time=now.replace(tzinfo=None),
             method="nearest",
@@ -155,8 +165,6 @@ def add_wave_energy(result, hour):
             raise ValueError("Energy period unavailable")
 
         period = get_value(get_point(dataset), "VTM10")
-
-        # Use offshore significant wave height, not surf estimate.
         height = result["wave_height_offshore"]
 
         if (
@@ -174,7 +182,7 @@ def add_wave_energy(result, hour):
         print("Wave energy unavailable:", error)
 
 
-def add_surf_components(result, hour):
+def add_swell_components(result, hour):
     variables = [
         "VHM0_SW1",
         "VMDR_SW1",
@@ -209,34 +217,119 @@ def add_surf_components(result, hour):
             "wind_wave_period": "VTM01_WW",
         }
 
-        for output_name, variable in mappings.items():
-            result[output_name] = get_value(point, variable)
+        for output, variable in mappings.items():
+            result[output] = get_value(point, variable)
 
     except Exception as error:
         print("Swell components unavailable:", error)
 
 
+def directional_exposure(direction):
+    """
+    Experimental directional exposure for a west-facing beach.
+    Offshore swell directions use the FROM convention.
+    """
+    if direction is None:
+        return 0.0
+
+    difference = (direction - BEACH_FACING + 180) % 360 - 180
+    exposure = math.cos(math.radians(difference))
+
+    return max(0.0, exposure)
+
+
+def period_adjustment(period):
+    """
+    Experimental adjustment for wave period.
+    Longer periods get a moderate increase in weight.
+    """
+    if period is None or period <= 0:
+        return 1.0
+
+    factor = (period / REFERENCE_PERIOD) ** PERIOD_EXPONENT
+
+    return max(0.65, min(1.60, factor))
+
+
+def component_surf_height(height, direction, period, weight=1.0):
+    if height is None or direction is None or height < 0:
+        return None
+
+    return (
+        height
+        * directional_exposure(direction)
+        * period_adjustment(period)
+        * weight
+    )
+
+
 def add_surf_height_estimate(result):
-    swell = result["primary_swell_height"]
+    """
+    Combine component contributions in quadrature,
+    rather than adding wave heights directly.
+    This is a preliminary empirical surf estimate,
+    NOT a calibrated nearshore wave model.
+    """
 
-    # Never substitute offshore height if swell is unavailable.
-    if swell is not None and swell >= 0:
-        estimated_height = swell * SURF_CALIBRATION
+    components = [
+        (
+            "primary_swell_height",
+            "primary_swell_direction",
+            "primary_swell_period",
+            1.0,
+        ),
+        (
+            "secondary_swell_height",
+            "secondary_swell_direction",
+            "secondary_swell_period",
+            1.0,
+        ),
+        (
+            "wind_wave_height",
+            "wind_wave_direction",
+            "wind_wave_period",
+            WIND_WAVE_FACTOR,
+        ),
+    ]
 
-        result["wave_height"] = round(estimated_height, 2)
-        result["surf_height_cm"] = round(estimated_height * 100)
-        result["surf_height_method"] = "experimental_bat_yam_v1"
-        result["surf_height_status"] = "unvalidated"
+    squared_heights = []
+    valid_components = 0
 
-    else:
+    for height_key, direction_key, period_key, weight in components:
+        height = result.get(height_key)
+        direction = result.get(direction_key)
+        period = result.get(period_key)
+
+        contribution = component_surf_height(
+            height, direction, period, weight
+        )
+
+        if contribution is not None:
+            squared_heights.append(contribution ** 2)
+            valid_components += 1
+
+    if valid_components == 0:
         result["wave_height"] = None
         result["surf_height_cm"] = None
+        return
+
+    surf_height = (
+        math.sqrt(sum(squared_heights)) * BASE_SURF_FACTOR
+    )
+
+    result["wave_height"] = round(surf_height, 2)
+    result["surf_height_cm"] = round(surf_height * 100)
+
+    result["surf_height_method"] = "bat_yam_directional_v2"
+    result["surf_height_status"] = "experimental_unvalidated"
+    result["surf_height_beach_facing"] = BEACH_FACING
 
 
 def main():
     now = datetime.now(timezone.utc)
     hour = now.strftime("%Y-%m-%dT%H:00:00")
 
+    # Original offshore wave model
     waves = get_marine_dataset(
         WAVE_DATASET,
         ["VHM0", "VMDR", "VTM01_SW1"],
@@ -252,8 +345,8 @@ def main():
     result = {
         "location": "Bat Yam",
         "wave_height": None,
-        "wave_height_offshore": get_value(point, "VHM0"),
         "surf_height_cm": None,
+        "wave_height_offshore": get_value(point, "VHM0"),
         "wave_period": get_value(point, "VTM01_SW1"),
         "wave_direction": get_value(point, "VMDR"),
         "water_temperature": None,
@@ -273,22 +366,20 @@ def main():
         "updated_at": now.isoformat(),
     }
 
-    # All existing forecast sources
+    # Keep all currently working data sources
     add_water_temperature(result, hour)
     add_wind(result, now)
     add_sea_level(result, now)
     add_wave_energy(result, hour)
-    add_surf_components(result, hour)
+    add_swell_components(result, hour)
 
-    # New experimental surf-height estimate
+    # Replace displayed wave height with surf estimate
     add_surf_height_estimate(result)
 
     os.makedirs("data", exist_ok=True)
 
     with open(
-        "data/forecast.json",
-        "w",
-        encoding="utf-8",
+        "data/forecast.json", "w", encoding="utf-8"
     ) as file:
         json.dump(
             result,
