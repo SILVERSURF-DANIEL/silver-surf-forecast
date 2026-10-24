@@ -1,6 +1,8 @@
 {
   "location": "Bat Yam",
-  "wave_height": 0.91,
+  "wave_height": 0.3,
+  "wave_height_offshore": 0.91,
+  "surf_height_cm": 30,
   "wave_period": 4.53,
   "wave_direction": 340.43,
   "water_temperature": 26.51,
@@ -17,8 +19,10 @@
   "wind_wave_height": 0.17,
   "wind_wave_direction": 5.83,
   "wind_wave_period": 1.78,
-  "updated_at": "2026-10-24T19:12:33.802601+00:00",
+  "updated_at": "2026-10-24T19:18:05.748418+00:00",
   "wind_source": "MET Norway",
   "sea_level_source": "Copernicus Marine",
-  "wave_energy_unit": "kW/m"
+  "wave_energy_unit": "kW/m",
+  "surf_height_method": "experimental_bat_yam_v1",
+  "surf_height_status": "unvalidated"
 }
